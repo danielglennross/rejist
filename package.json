@@ -1,0 +1,22 @@
+{
+  "name": "rejist",
+  "version": "1.0.0",
+  "description": "bring api schemas alive",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "rejist",
+    "refit",
+    "retrofit",
+    "js"
+  ],
+  "author": "daniel ross",
+  "license": "ISC",
+  "dependencies": {
+    "hoek": "^4.1.0",
+    "joi": "^10.2.2",
+    "wreck": "^10.0.0"
+  }
+}
