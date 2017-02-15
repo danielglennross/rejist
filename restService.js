@@ -10,15 +10,18 @@ module.exports = (apiSchema, baseUriFac /* , settings = {}*/) => {
 
   Hoek.assert(
     ['string', 'function'].some(type => typeof baseUriFac === type),
-    '"basUri" must be a string or function'
+    '"basUriFac" must be a string or function'
   );
 
-  const baseUri = typeof baseUriFac === 'function'
-    ? baseUriFac()
-    : baseUriFac;
+  const baseUri = typeof baseUriFac === 'function' ? baseUriFac() : baseUriFac;
 
-  const httpRequest = (method, url, requestOptions) => {
-    const options = requestOptions;
+  const httpRequest = (opt) => {
+    const options = Object.keys(opt.options).reduce((obj, key) => {
+      if (typeof opt.options[key] !== 'undefined') {
+        Object.assign(obj, { [key]: opt.options[key] });
+      }
+      return obj;
+    }, {});
 
     options.headers = Object.assign({}, options.headers || {}, {
       'Content-Type': 'application/json',
@@ -29,26 +32,41 @@ module.exports = (apiSchema, baseUriFac /* , settings = {}*/) => {
       options.payload = JSON.stringify(options.payload);
     }
 
-    return new Promise((resolve, reject) =>
-      Wreck[method](url, options, (err, res, payload) => {
-        if (err) {
-          return reject(err);
-        }
-
-        // eslint-disable-next-line no-param-reassign
-        res.payload = payload instanceof Buffer
-          ? JSON.parse(payload.toString() || '{}')
-          : payload;
-        return resolve(res);
+    return Promise.resolve()
+      .then(() => {
+        const request = Object.assign({},
+          { options: Hoek.clone(options) },
+          { url: opt.url, method: opt.method }
+        );
+        return opt.handleRequest(request);
       })
-    );
+      .then(({ method: m, url: u, options: o }) =>
+        new Promise((resolve, reject) =>
+          Wreck[m](u, o, (err, res, payload) => {
+            if (err) {
+              return reject(err);
+            }
+
+            // eslint-disable-next-line no-param-reassign
+            res.payload = payload instanceof Buffer
+              ? JSON.parse(payload.toString() || '{}')
+              : payload;
+            return resolve(res);
+          })
+        )
+      )
+      .then((res) => opt.handleResponse(null, res))
+      .catch((err) => opt.handleResponse(err, null));
   };
 
   const createApiCall = (schema) => {
+    const cleanSchema = Hoek.clone(schema);
+
+    Hoek.assert(cleanSchema.path, '"path" must exist');
+    Hoek.assert(cleanSchema.method, '"method" must exist');
 
     // ensure correct joi format
-    const cleanSchema = Hoek.clone(schema);
-    cleanSchema.forEach(type => {
+    Object.keys(cleanSchema).forEach(type => {
       if (schemaTypes.includes(type) &&
             schema[type] &&
               !schema[type].isJoi) {
@@ -57,30 +75,26 @@ module.exports = (apiSchema, baseUriFac /* , settings = {}*/) => {
     });
 
     return (args) => {
-
       // map args with schema
-      const options = Object.keys(args).reduce((agg, k) => {
+      const options = Object.keys(args).reduce((argObj, k) => {
         const clone = [...schemaTypes];
         const create = (type) => {
           if (!type) {
             return;
           }
-          const item = schema[type] && schema[type]._inner.children.find(
+          const item = cleanSchema[type] && cleanSchema[type]._inner.children.find(
             x => x.key.toLowerCase() === k.toLowerCase()
           );
           if (item) {
             // eslint-disable-next-line no-param-reassign
-            agg[type] = Object.assign({}, agg[type] || {}, { [k]: args[k] });
+            argObj[type] = Object.assign({}, argObj[type] || {}, { [k]: args[k] });
             return;
           }
           create(clone.shift());
         };
         create(clone.shift());
-        return agg;
+        return argObj;
       }, {});
-
-      Hoek.assert(schema.path, '"path" must exist');
-      Hoek.assert(schema.method, '"method" must exist');
 
       const validateFactory = (type) => {
         if (options && options[type]) {
@@ -100,7 +114,9 @@ module.exports = (apiSchema, baseUriFac /* , settings = {}*/) => {
       ]) => {
         if (params) {
           Object.keys(options.params).forEach(key => {
-            cleanSchema.path = cleanSchema.path.replace(`{${key}}`, encodeURIComponent(options.params[key]));
+            cleanSchema.path = cleanSchema.path.replace(
+              `{${key}}`, encodeURIComponent(options.params[key])
+            );
           });
         }
         if (query) {
@@ -112,7 +128,24 @@ module.exports = (apiSchema, baseUriFac /* , settings = {}*/) => {
 
         const method = cleanSchema.method.toLowerCase();
         const url = `${baseUri.trim('/')}${cleanSchema.path}`;
-        return httpRequest(method, url, { headers, payload });
+
+        const handleRequest = cleanSchema.handleRequest || (
+          (req) => Promise.resolve(req)
+        );
+        const handleResponse = cleanSchema.handleResponse || (
+          (err, res) => (err ? Promise.reject(err) : Promise.resolve(res))
+        );
+
+        return httpRequest({
+          method,
+          url,
+          options: {
+            headers,
+            payload
+          },
+          handleRequest,
+          handleResponse
+        });
       });
     };
   };
