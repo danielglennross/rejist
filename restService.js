@@ -62,8 +62,9 @@ module.exports = (apiSchema, baseUriFac /* , settings = {}*/) => {
   const createApiCall = (schema) => {
     const cleanSchema = Hoek.clone(schema);
 
-    Hoek.assert(cleanSchema.path, '"path" must exist');
-    Hoek.assert(cleanSchema.method, '"method" must exist');
+    //Hoek.assert(cleanSchema.path, '"path" must exist');
+    //Hoek.assert(cleanSchema.method, '"method" must exist');
+    //Hoek.assert(cleanSchema.template, '"template" must exist');
 
     // ensure correct joi format
     Object.keys(cleanSchema).forEach(type => {
@@ -75,26 +76,44 @@ module.exports = (apiSchema, baseUriFac /* , settings = {}*/) => {
     });
 
     return (args) => {
+
+      // GET /players/{playerId}/games{?take,skip}
+      const [gh, ty] = cleanSchema.template.trim().split(/\s+/);
+      const params = ty.match(/{([^\?].+?)}/)[1];
+      const query = ty.match(/{\?(.+?)}/)[1].split(',');
+      const options = { params, query };
+
       // map args with schema
-      const options = Object.keys(args).reduce((argObj, k) => {
-        const clone = [...schemaTypes];
-        const create = (type) => {
-          if (!type) {
-            return;
+      // const options = Object.keys(args).reduce((argObj, k) => {
+      //   const clone = [...schemaTypes];
+      //   const create = (type) => {
+      //     if (!type) {
+      //       return;
+      //     }
+      //     const item = cleanSchema[type] && cleanSchema[type]._inner.children.find(
+      //       x => x.key.toLowerCase() === k.toLowerCase()
+      //     );
+      //     if (item) {
+      //       // eslint-disable-next-line no-param-reassign
+      //       argObj[type] = Object.assign({}, argObj[type] || {}, { [k]: args[k] });
+      //       return;
+      //     }
+      //     create(clone.shift());
+      //   };
+      //   create(clone.shift());
+      //   return argObj;
+      // }, {});
+
+      schemaTypes.forEach(s => {
+        cleanSchema.alias[s].forEach(k => {
+          if (Object.keys(options[s]).includes(k)) {
+            const realKey = cleanSchema.alias[s][k];
+            const tmp = options[s][k];
+            options[s][realKey] = tmp;
+            delete options[s][k];
           }
-          const item = cleanSchema[type] && cleanSchema[type]._inner.children.find(
-            x => x.key.toLowerCase() === k.toLowerCase()
-          );
-          if (item) {
-            // eslint-disable-next-line no-param-reassign
-            argObj[type] = Object.assign({}, argObj[type] || {}, { [k]: args[k] });
-            return;
-          }
-          create(clone.shift());
-        };
-        create(clone.shift());
-        return argObj;
-      }, {});
+        });
+      });
 
       const validateFactory = (type) => {
         if (options && options[type]) {
