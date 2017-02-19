@@ -62,9 +62,7 @@ module.exports = (apiSchema, baseUriFac /* , settings = {}*/) => {
   const createApiCall = (schema) => {
     const cleanSchema = Hoek.clone(schema);
 
-    //Hoek.assert(cleanSchema.path, '"path" must exist');
-    //Hoek.assert(cleanSchema.method, '"method" must exist');
-    //Hoek.assert(cleanSchema.template, '"template" must exist');
+    Hoek.assert(cleanSchema.template, '"template" must exist');
 
     // ensure correct joi format
     Object.keys(cleanSchema).forEach(type => {
@@ -77,48 +75,67 @@ module.exports = (apiSchema, baseUriFac /* , settings = {}*/) => {
 
     return (args) => {
 
-      // GET /players/{playerId}/games{?take,skip}
-      const [gh, ty] = cleanSchema.template.trim().split(/\s+/);
-      const params = ty.match(/{([^\?].+?)}/)[1];
-      const query = ty.match(/{\?(.+?)}/)[1].split(',');
-      const options = { params, query };
+      const routeArr = cleanSchema.template.trim().split(/\s+/);
+      const method = routeArr[0];
+      let route = routeArr[1];
+
+      const templateParams = (route.match(/{([^\?].+?)}/g) || []).map(s => s.match(/[^{].*[^}]/g)[0]);
+      const queryStr = (route.match(/{\?(.+?)}/g) || [])[0] || [];
+      const templateQuery = queryStr.length ? queryStr.split(',').map(s => s.match(/[^{|^?].*[^}]/g)[0]) : [];
+
+      const updateSchema = (o) => {
+        if (!o.type.length) {
+          return;
+        }
+        cleanSchema[o.typeStr] = (cleanSchema[o.typeStr] || Joi.object()).concat(
+          Joi.object(
+            o.type.reduce((obj, k) => {
+              Object.assign(obj, { [k]: o.schema });
+              return obj;
+            }, {})
+          )
+        );
+      };
+      [
+        { type: templateParams, typeStr: 'params', schema: Joi.required() },
+        { type: templateQuery, typeStr: 'query', schema: Joi.optional() }
+      ].map(updateSchema);
 
       // map args with schema
-      // const options = Object.keys(args).reduce((argObj, k) => {
-      //   const clone = [...schemaTypes];
-      //   const create = (type) => {
-      //     if (!type) {
-      //       return;
-      //     }
-      //     const item = cleanSchema[type] && cleanSchema[type]._inner.children.find(
-      //       x => x.key.toLowerCase() === k.toLowerCase()
-      //     );
-      //     if (item) {
-      //       // eslint-disable-next-line no-param-reassign
-      //       argObj[type] = Object.assign({}, argObj[type] || {}, { [k]: args[k] });
-      //       return;
-      //     }
-      //     create(clone.shift());
-      //   };
-      //   create(clone.shift());
-      //   return argObj;
-      // }, {});
+      const options = Object.keys(args || {}).reduce((argObj, k) => {
+        const alias = Object.keys(cleanSchema.alias || {}).find(i =>
+          cleanSchema.alias[i].toLowerCase() === k.toLowerCase()
+        ) || k;
 
-      schemaTypes.forEach(s => {
-        cleanSchema.alias[s].forEach(k => {
-          if (Object.keys(options[s]).includes(k)) {
-            const realKey = cleanSchema.alias[s][k];
-            const tmp = options[s][k];
-            options[s][realKey] = tmp;
-            delete options[s][k];
+        const clone = [...schemaTypes];
+        const create = (type) => {
+          if (!type) {
+            return;
           }
-        });
-      });
+          if ( // TODO, make this less specific
+            (type === 'params' && !templateParams.includes(alias)) ||
+            (type === 'query' && !templateQuery.includes(alias))
+          ) {
+            return;
+          }
+          const item = cleanSchema[type] && cleanSchema[type]._inner.children.find(
+            x => x.key.toLowerCase() === alias.toLowerCase()
+          );
+          if (item) {
+            // eslint-disable-next-line no-param-reassign
+            argObj[type] = Object.assign({}, argObj[type] || {}, { [alias]: args[k] });
+            return;
+          }
+          create(clone.shift());
+        };
+        create(clone.shift());
+        return argObj;
+      }, {});
 
       const validateFactory = (type) => {
         if (options && options[type]) {
           return new Promise((resolve, reject) =>
-            Joi.validate(options[type], schema[type], (err, val) =>
+            Joi.validate(options[type], cleanSchema[type], (err, val) =>
               (err ? reject(err) : resolve(val))
             )
           );
@@ -132,21 +149,20 @@ module.exports = (apiSchema, baseUriFac /* , settings = {}*/) => {
         headers, params, query, payload
       ]) => {
         if (params) {
-          Object.keys(options.params).forEach(key => {
-            cleanSchema.path = cleanSchema.path.replace(
-              `{${key}}`, encodeURIComponent(options.params[key])
+          Object.keys(params).forEach(key => {
+            route = route.replace(
+              `{${key}}`, encodeURIComponent(params[key])
             );
           });
         }
         if (query) {
-          const keyVals = Object.keys(options.query).map(key =>
-            `${key}=${encodeURIComponent(options.query[key])}`
+          const keyVals = Object.keys(query).map(key =>
+            `${key}=${encodeURIComponent(query[key])}`
           );
-          cleanSchema.path += `?${keyVals.join('&')}`;
+          route += `?${keyVals.join('&')}`;
         }
 
-        const method = cleanSchema.method.toLowerCase();
-        const url = `${baseUri.trim('/')}${cleanSchema.path}`;
+        const url = `${baseUri.trim('/')}${route}`;
 
         const handleRequest = cleanSchema.handleRequest || (
           (req) => Promise.resolve(req)
